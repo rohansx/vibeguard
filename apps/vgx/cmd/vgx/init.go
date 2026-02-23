@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/vibeguard/vgx/internal/config"
+	"github.com/vibeguard/vgx/internal/daemon"
 )
 
 var initCmd = &cobra.Command{
@@ -11,34 +13,44 @@ var initCmd = &cobra.Command{
 	Short: "Build the initial Security Property Graph for a repository",
 	Long: `Initialize VibeGuard for a repository by building its Security Property Graph.
 
-Runs tree-sitter parsing across all supported source files, classifies security
-nodes (sources, sinks, sanitizers, trust boundaries), and persists the SPG to
-~/.vibeguard/graph/<repo-hash>/ for incremental updates.
+Walks all source files (Python, TypeScript, JavaScript, Go), classifies security
+nodes (sources, sinks, sanitizers), builds data-flow edges, and persists the SPG
+to disk at ~/.vibeguard/graph/<repo-hash>/
 
-Initial build runs in background — use 'vgx report' to check progress.`,
+Subsequent updates via 'vgx serve' are incremental (sub-500ms per file change).`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runInit,
 }
 
 func init() {
-	initCmd.Flags().StringSliceP("languages", "l", []string{}, "Languages to analyze (python, typescript, go). Auto-detected if empty.")
-	initCmd.Flags().BoolP("background", "b", true, "Run initial graph build in background")
-	initCmd.Flags().StringP("store", "s", "", "Override SPG store path (default: ~/.vibeguard/graph)")
+	initCmd.Flags().BoolP("verbose", "v", false, "Print per-file progress")
+	initCmd.Flags().StringP("store", "s", "", "Override SPG store path (default: ~/.vibeguard/graph/<hash>)")
 }
 
-func runInit(_ *cobra.Command, args []string) error {
+func runInit(cmd *cobra.Command, args []string) error {
 	repoPath := "."
 	if len(args) > 0 {
 		repoPath = args[0]
 	}
 
-	// TODO(phase1): implement tree-sitter parsing + SPG construction
-	fmt.Printf("vgx init: building Security Property Graph for %s\n", repoPath)
-	fmt.Println("  → Auto-detecting languages and frameworks...")
-	fmt.Println("  → Initial graph build will run in background (5–15 min for medium repos)")
-	fmt.Println("  → Run 'vgx report' to check progress")
-	fmt.Println("  → Run 'vgx serve' to start the MCP server once build completes")
-	fmt.Println()
-	fmt.Println("SPG daemon implementation lands in Phase 1.")
-	return nil
+	verbose, _ := cmd.Flags().GetBool("verbose")
+	storeOverride, _ := cmd.Flags().GetString("store")
+
+	cfg := config.Load()
+	storePath := cfg.SPGStorePath
+	if storeOverride != "" {
+		storePath = storeOverride
+	}
+	if storePath == "" {
+		storePath = daemon.DefaultStorePath(repoPath)
+	}
+
+	fmt.Printf("\n  VibeGuard — Building Security Property Graph\n")
+	fmt.Printf("  ─────────────────────────────────────────────\n\n")
+
+	return daemon.Init(daemon.Config{
+		RepoPath:  repoPath,
+		StorePath: storePath,
+		Verbose:   verbose,
+	})
 }

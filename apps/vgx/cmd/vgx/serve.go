@@ -9,53 +9,66 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vibeguard/vgx/internal/api"
 	"github.com/vibeguard/vgx/internal/config"
+	"github.com/vibeguard/vgx/internal/daemon"
 	"github.com/vibeguard/vgx/internal/db"
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the VGX daemon: file watcher + MCP server + team sync API",
-	Long: `Start the VibeGuard SPG daemon.
+	Short: "Start the VibeGuard SPG daemon: file watcher + MCP server",
+	Long: `Start the VibeGuard Security Property Graph daemon.
 
-Watches the repository for file changes, maintains the Security Property Graph
-incrementally, and exposes it to AI coding agents via an MCP server on stdio.
+Default mode: watches the repository for file changes and serves the SPG to AI
+coding agents (Cursor, Claude Code) via MCP on stdio. No network. Code stays local.
 
-The optional --api flag also starts the team sync REST API for Pro/Team tiers.`,
+Add --api to also start the team sync REST API on --port (Pro/Team tier).`,
 	RunE: runServe,
 }
 
 func init() {
 	serveCmd.Flags().IntP("port", "p", 8080, "Port for the team sync REST API")
-	serveCmd.Flags().BoolP("mcp", "m", false, "Run MCP server on stdio (for Cursor / Claude Code)")
-	serveCmd.Flags().BoolP("api", "a", false, "Run team sync REST API alongside MCP")
-	serveCmd.Flags().StringP("repo", "r", ".", "Path to the repository to watch")
+	serveCmd.Flags().BoolP("mcp", "m", true, "Serve MCP on stdio (default: true)")
+	serveCmd.Flags().BoolP("api", "a", false, "Also run team sync REST API on --port")
+	serveCmd.Flags().StringP("repo", "r", ".", "Repository path to watch and serve")
+	serveCmd.Flags().BoolP("watch", "w", true, "Watch for file changes and update SPG incrementally")
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
 	port, _ := cmd.Flags().GetInt("port")
 	mcpMode, _ := cmd.Flags().GetBool("mcp")
 	apiMode, _ := cmd.Flags().GetBool("api")
-	_ = mcpMode // MCP server implementation lands in Phase 1
+	repoPath, _ := cmd.Flags().GetString("repo")
+	watchMode, _ := cmd.Flags().GetBool("watch")
 
 	cfg := config.Load()
 
-	if apiMode {
-		ctx := context.Background()
-		pool, err := db.NewPool(ctx, cfg.DatabaseURL)
-		if err != nil {
-			return fmt.Errorf("database connection failed: %w", err)
-		}
-		defer pool.Close()
-
-		router := api.NewRouter(cfg, pool)
-		addr := fmt.Sprintf(":%d", port)
-		log.Printf("VGX team sync API starting on %s", addr)
-		return http.ListenAndServe(addr, router)
+	storePath := cfg.SPGStorePath
+	if storePath == "" {
+		storePath = daemon.DefaultStorePath(repoPath)
 	}
 
-	// Default: MCP daemon mode (no network, stdio only)
-	// TODO(phase1): start file watcher + SPG daemon + MCP stdio server
-	log.Println("VGX SPG daemon starting — MCP server implementation coming in Phase 1")
-	log.Println("Run with --api to start the team sync REST API")
-	select {} // block until interrupted
+	// Team sync REST API runs in a goroutine if requested
+	if apiMode {
+		go func() {
+			ctx := context.Background()
+			pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+			if err != nil {
+				log.Printf("[vgx] WARNING: database connection failed (%v) — team sync API disabled", err)
+				return
+			}
+			router := api.NewRouter(cfg, pool)
+			addr := fmt.Sprintf(":%d", port)
+			log.Printf("[vgx] Team sync API listening on %s", addr)
+			if err := http.ListenAndServe(addr, router); err != nil {
+				log.Printf("[vgx] Team sync API error: %v", err)
+			}
+		}()
+	}
+
+	return daemon.Serve(daemon.Config{
+		RepoPath:  repoPath,
+		StorePath: storePath,
+		MCPMode:   mcpMode,
+		WatchMode: watchMode,
+	})
 }
