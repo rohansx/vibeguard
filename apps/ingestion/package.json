@@ -1,0 +1,12 @@
+{
+  "name": "ingestion",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'Python service — no JS build step'",
+    "dev": "uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload",
+    "test": "pytest tests/ -v",
+    "lint": "ruff check src/ tests/",
+    "clean": "rm -rf __pycache__ .pytest_cache .ruff_cache"
+  }
+}

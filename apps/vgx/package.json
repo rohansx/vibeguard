@@ -1,0 +1,16 @@
+{
+  "name": "vgx",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "prebuild": "mkdir -p internal/embed/dist && cp -r ../dashboard/dist/* internal/embed/dist/ 2>/dev/null || true",
+    "build": "go build -o bin/vgx ./cmd/vgx",
+    "dev": "go run ./cmd/vgx serve --port 8080",
+    "test": "go test ./...",
+    "lint": "golangci-lint run ./...",
+    "clean": "rm -rf bin/ internal/embed/dist/",
+    "db:migrate": "dbmate --migrations-dir db/migrations up",
+    "db:rollback": "dbmate --migrations-dir db/migrations rollback",
+    "db:status": "dbmate --migrations-dir db/migrations status"
+  }
+}

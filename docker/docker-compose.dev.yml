@@ -1,0 +1,21 @@
+# Development overrides: docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: apps/vgx/Dockerfile
+      target: go-build
+    command: ["go", "run", "./cmd/vgx", "serve", "--port", "8080"]
+    volumes:
+      - ../apps/vgx:/app
+    environment:
+      DATABASE_URL: "postgres://vibeguard:vibeguard@db:5432/vibeguard?sslmode=disable"
+
+  ingestion:
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    volumes:
+      - ../apps/ingestion/src:/app/src
+
+  db:
+    ports:
+      - "5432:5432"
