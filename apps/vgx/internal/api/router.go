@@ -26,38 +26,25 @@ func NewRouter(cfg *config.Config, pool *pgxpool.Pool) http.Handler {
 	}))
 
 	health := &handlers.HealthHandler{}
-	dashboard := &handlers.DashboardHandler{Pool: pool}
-	rules := &handlers.RulesHandler{Pool: pool}
-	docs := &handlers.DocumentsHandler{Pool: pool, Cfg: cfg}
-	scans := &handlers.ScansHandler{Pool: pool}
+	sync := handlers.NewSyncHandler(pool, cfg)
 
 	// Unauthenticated
 	r.Get("/api/v1/health", health.Check)
 
-	// Authenticated API routes (Clerk middleware will be added when configured)
+	// Team sync API (authenticated — Clerk middleware added in Phase 2)
 	r.Route("/api/v1", func(r chi.Router) {
-		// Dashboard
-		r.Get("/dashboard/summary", dashboard.Summary)
+		// Repository registry
+		r.Get("/repositories", sync.ListRepositories)
+		r.Post("/repositories", sync.RegisterRepository)
+		r.Get("/repositories/{repoID}", sync.GetRepository)
 
-		// Scans
-		r.Get("/scans", scans.List)
-		r.Post("/scans", scans.Create)
-		r.Get("/scans/{scanID}", scans.Get)
-
-		// Compliance rules
-		r.Get("/rules", rules.List)
-		r.Get("/rules/{ruleID}", handlers.Placeholder("get rule"))
-
-		// Documents + ingestion
-		r.Get("/documents", docs.List)
-		r.Post("/documents", docs.Upload)
-		r.Get("/documents/{docID}", handlers.Placeholder("get document"))
-		r.Get("/documents/{docID}/rules", handlers.Placeholder("list proposed rules"))
-		r.Post("/documents/{docID}/rules/{ruleID}/approve", handlers.Placeholder("approve rule"))
-		r.Post("/documents/{docID}/rules/{ruleID}/reject", handlers.Placeholder("reject rule"))
+		// SPG state (team sync — mirrors local graph metadata)
+		r.Get("/repositories/{repoID}/taint-paths", sync.ListTaintPaths)
+		r.Get("/repositories/{repoID}/attack-surface", sync.GetAttackSurface)
+		r.Post("/repositories/{repoID}/calibrate", sync.RecordCalibration)
 	})
 
-	// Serve embedded React SPA for all non-API routes
+	// Serve embedded SPA for all non-API routes
 	r.Handle("/*", embed.SPAHandler())
 
 	return r

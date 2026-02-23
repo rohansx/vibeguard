@@ -7,17 +7,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 var rootCmd = &cobra.Command{
 	Use:     "vgx",
-	Short:   "VibeGuard compliance scanner",
+	Short:   "VibeGuard — Security Property Graph oracle for AI coding agents",
 	Version: version,
 }
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
-	rootCmd.AddCommand(scanCmd)
+	// Phase 1 commands — stubs wired up, implementations land in subsequent PRs
+	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(queryCmd)
+	rootCmd.AddCommand(reportCmd)
+	rootCmd.AddCommand(diffCmd)
+	rootCmd.AddCommand(ciCmd)
 }
 
 func main() {

@@ -1,71 +1,113 @@
 # CLAUDE.md — VibeGuard Project Conventions
 
+## Product
+
+VibeGuard is a **persistent, live Security Property Graph (SPG)** that encodes the full security
+semantics of a codebase — taint sources, sinks, sanitizers, trust boundaries, attack paths — and
+exposes them to AI coding agents (Cursor, Claude Code) via MCP, so agents write secure code by
+construction, not scan for vulnerabilities after the fact.
+
 ## Architecture
 
-VibeGuard is a compliance-as-code tool with three services in a Turborepo + pnpm monorepo:
+Two services in a Turborepo + pnpm monorepo:
 
-1. **VGX (Go)** — `apps/vgx/` — CLI scanner + REST API (:8080) + embedded React SPA
-2. **Ingestion (Python)** — `apps/ingestion/` — FastAPI sidecar (:8001, internal only) for regulatory PDF parsing
-3. **Dashboard (React)** — `apps/dashboard/` — Vite + React 19 + TypeScript, built and embedded into VGX binary
+1. **VGX (Go)** — `apps/vgx/` — SPG daemon + MCP server (stdio) + CLI + team sync REST API (:8080)
+2. **Dashboard (React)** — `apps/dashboard/` — Vite + React 19 + TypeScript, embedded into VGX binary
 
-All services share **PostgreSQL 17**. Go proxies document uploads to the Python service.
+Both share **PostgreSQL 17** (team sync metadata only — local SPG lives on-disk at `SPG_STORE_PATH`).
+
+**Phase 2 addition:** `apps/vscode-extension/` — TypeScript + D3.js VS Code extension
 
 ## Quick Start
 
 ```bash
 pnpm install                    # Install JS dependencies
-turbo run build                 # Build everything (dashboard → VGX)
-turbo run dev                   # Start all services in dev mode
+turbo run build                 # Build everything (dashboard → VGX binary)
+turbo run dev                   # Start dev mode
 
-# Podman (full stack with Postgres):
+# MCP mode (for Cursor / Claude Code):
+vgx init                        # Build initial SPG for current repo
+vgx serve                       # Start SPG daemon + MCP server on stdio
+
+# Team sync API + Postgres:
 podman compose -f docker/docker-compose.yml up
 
-# Or use Makefile (recommended):
+# Makefile:
 make setup                      # First-time: install + db + migrate
 make dev                        # Start all services
 make db-migrate                 # Run migrations
 make db-status                  # Check migration status
 ```
 
+## CLI Commands
+
+| Command | Purpose |
+|---------|---------|
+| `vgx init [path]` | Build initial SPG for a repository |
+| `vgx serve` | Start SPG daemon + MCP server (stdio, local only) |
+| `vgx serve --api` | Also start team sync REST API on :8080 |
+| `vgx query <tool> [args]` | Run a security query against the live SPG |
+| `vgx report` | Generate structured security posture report |
+| `vgx diff [ref]` | Show SPG changes introduced since a git ref |
+| `vgx ci` | CI/CD mode: exit non-zero if PR introduces new taint paths |
+
+## MCP Tools (8 deterministic query tools)
+
+All tools return structured JSON. Same query + same code = same result always. No LLM in the
+verification path — pure graph traversal.
+
+| Tool | Security Question |
+|------|------------------|
+| `query_taint_paths(sink)` | Unsanitized paths from any SourceNode to this sink? |
+| `get_attack_surface(module)` | All untrusted entry points for this module? |
+| `calculate_blast_radius(function)` | What security properties change if I modify this function? |
+| `find_missing_sanitizers()` | Where does tainted data reach a sink without sanitization? |
+| `get_trust_boundary_violations()` | Which paths cross trust boundaries without auth checks? |
+| `trace_data_flow(variable, file, line)` | Where does this variable travel through the codebase? |
+| `check_auth_coverage(endpoint)` | Does this endpoint enforce auth before sensitive operations? |
+| `get_security_context(file)` | Full security posture of this file? |
+
 ## Monorepo Orchestration
 
-- Turborepo + pnpm workspaces manage all three services
-- Go and Python apps have thin `package.json` wrappers so Turborepo can orchestrate them
-- `turbo run build` builds dashboard first (Turborepo `dependsOn`), copies dist into Go embed dir, then compiles Go binary
-- VGX's turbo.json has `"dependsOn": ["dashboard#build"]`
+- Turborepo + pnpm workspaces manage both services
+- `turbo run build` builds dashboard first, copies dist into Go embed dir, then compiles VGX binary
+- VGX's `turbo.json` has `"dependsOn": ["dashboard#build"]`
 
 ## Code Conventions
 
 ### Go (apps/vgx/)
 - Standard layout: `cmd/` for entrypoints, `internal/` for private packages
 - `pgx/v5` for database, Chi for routing, Cobra for CLI
-- Clerk SDK v2 for auth middleware
 - All handlers: JSON responses with `Content-Type: application/json`
 - Error format: `{"error": "message", "code": "ERROR_CODE"}`
 - Linting: `golangci-lint run ./...`
 
-### Python (apps/ingestion/)
-- Python 3.12+, type hints everywhere
-- FastAPI + Pydantic v2, asyncpg for database
-- Ruff for linting/formatting (`ruff check`, `ruff format`)
-- Pytest + pytest-asyncio for tests
-- Config via pydantic-settings (environment variables)
-
-### TypeScript (apps/dashboard/)
+### TypeScript (apps/dashboard/, apps/vscode-extension/)
 - React 19 + TypeScript strict mode
 - Vite for bundling, Tailwind CSS v4 for styling
 - TanStack Query for server state
 - Path alias: `@/` maps to `src/`
 - ESLint with typescript-eslint
 
-## Database
+## Database (team sync metadata only)
 
 - PostgreSQL 17, connection via `DATABASE_URL` env var
+- Local SPG stored on-disk (Neo4j embedded) at `SPG_STORE_PATH` — NOT in PostgreSQL
+- PostgreSQL holds: `repositories`, `spg_nodes`, `taint_paths`, `calibration_events`, `framework_classifiers`
 - Migrations managed by **dbmate** — files in `apps/vgx/db/migrations/`
 - Run migrations: `make db-migrate` (or `dbmate -d ./apps/vgx/db/migrations up`)
 - Create new migration: `make db-new name=<name>` (uses `-- migrate:up` / `-- migrate:down` markers)
 - Never modify existing migrations; always create new ones
-- Schema owned by Go service only; Python reads/writes but never modifies schema
+
+## Environment Variables
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `DATABASE_URL` | For team sync API | PostgreSQL connection string |
+| `ANTHROPIC_API_KEY` | Phase 2+ | Claude Sonnet for hybrid sanitizer classification |
+| `CLERK_SECRET_KEY` | For team sync | Authentication for Pro/Team tier |
+| `SPG_STORE_PATH` | No | Override local graph store path (default: `~/.vibeguard/graph`) |
+| `SENTRY_DSN` | No | Error tracking |
 
 ## Git Workflow
 
@@ -74,48 +116,35 @@ make db-status                  # Check migration status
 - Bug fixes: `fix/short-description`
 - Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`
 - Squash merge to main
+- Compliance-as-code baseline preserved at `archive/compliance-v0`
 
 ## Testing
 
 - **Go:** `go test ./...` in `apps/vgx/`
-- **Python:** `pytest` in `apps/ingestion/`
-- **TypeScript:** `pnpm --filter dashboard lint` (tests added later)
+- **TypeScript:** `pnpm --filter dashboard lint`
 
 ## Security
 
-- All API routes (except /health) require Clerk JWT
+- MCP server runs on stdio transport only — no network exposure, no code leaves the machine
+- All team sync API routes (except /health) require Clerk JWT
+- `calibration_events` table is append-only (DB triggers prevent UPDATE/DELETE)
+- SQL: parameterized queries only (pgx)
 - Secrets via environment variables, never committed
-- Audit log is append-only (DB triggers prevent UPDATE/DELETE)
-- Ingestion service: internal-only (Podman `expose`, not `ports`)
-- File uploads: PDF only, max 50MB
-- SQL: parameterized queries only (pgx, asyncpg)
-
-## Ingestion Pipeline (runs inside ingestion container)
-
-All pipeline tools are Python libraries running in the `apps/ingestion/` service:
-
-- **Marker API** (`httpx`) — converts regulatory PDFs to structured markdown (cloud API via MARKER_API_KEY)
-- **PageIndex** — builds hierarchical tree index for cross-reference traversal (local)
-- **LangExtract** — extracts rules from text with character-level source offsets (local)
-- **OpenAI API** (`openai`) — translates legal rules into technical requirements (remote API call)
-
-Pipeline stubs are in `apps/ingestion/src/pipeline/`. Implementation follows `docs/architecture/ingestion-pipeline.md`.
-
-## Container Runtime
-
-- **Podman 5.x** (aliased as `docker`) — compose files in `docker/`
-- `podman compose -f docker/docker-compose.yml up` for full stack
-- Ingestion service uses `expose` (internal only), never `ports`
 
 ## Key Paths
 
 | Path | Purpose |
 |------|---------|
-| `apps/vgx/cmd/` | Go CLI entrypoints |
-| `apps/vgx/internal/api/` | REST API handlers + router |
+| `apps/vgx/cmd/vgx/` | CLI entrypoints (init, serve, query, report, diff, ci) |
+| `apps/vgx/internal/parser/` | Tree-sitter incremental AST (Phase 1) |
+| `apps/vgx/internal/graph/` | SPG construction + Neo4j persistence (Phase 1) |
+| `apps/vgx/internal/taint/` | Taint propagation + differential dataflow (Phase 1) |
+| `apps/vgx/internal/mcp/` | MCP server + 8 security query tools (Phase 1) |
+| `apps/vgx/internal/watcher/` | File watcher — inotify/FSEvents (Phase 1) |
+| `apps/vgx/internal/api/` | Team sync REST API handlers |
 | `apps/vgx/internal/embed/` | Embedded SPA filesystem |
 | `apps/vgx/db/migrations/` | SQL migration files (dbmate format) |
-| `apps/ingestion/src/pipeline/` | PDF parsing + extraction pipeline |
 | `apps/dashboard/src/pages/` | React page components |
+| `apps/vscode-extension/` | VS Code extension — D3.js attack path viz (Phase 2) |
 | `docs/` | Architecture and development docs |
 | `docker/` | Podman/Docker Compose configs |

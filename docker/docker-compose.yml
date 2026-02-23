@@ -9,33 +9,15 @@ services:
     environment:
       DATABASE_URL: "postgres://vibeguard:${DB_PASSWORD:-vibeguard}@vibeguard-db:5432/vibeguard?sslmode=disable"
       CLERK_SECRET_KEY: "${CLERK_SECRET_KEY:-}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      INGESTION_SERVICE_URL: "http://vibeguard-ingestion:8001"
-    depends_on:
-      vibeguard-db:
-        condition: service_healthy
-      vibeguard-ingestion:
-        condition: service_started
-    restart: unless-stopped
-
-  vibeguard-ingestion:
-    container_name: vibeguard-ingestion
-    build:
-      context: ..
-      dockerfile: apps/ingestion/Dockerfile
-    expose:
-      - "8001"
-    environment:
-      DATABASE_URL: "postgres://vibeguard:${DB_PASSWORD:-vibeguard}@vibeguard-db:5432/vibeguard?sslmode=disable"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      MARKER_API_KEY: "${MARKER_API_KEY:-}"
-      UPLOAD_DIR: "/data/uploads"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      SPG_STORE_PATH: "/data/graph"
     volumes:
-      - uploads:/data/uploads
+      - spgdata:/data/graph
     depends_on:
       vibeguard-db:
         condition: service_healthy
     restart: unless-stopped
+    command: ["serve", "--api"]
 
   vibeguard-db:
     container_name: vibeguard-db
@@ -57,4 +39,4 @@ services:
 
 volumes:
   pgdata:
-  uploads:
+  spgdata:
