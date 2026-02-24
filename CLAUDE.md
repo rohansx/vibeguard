@@ -117,6 +117,8 @@ verification path — pure graph traversal.
 - Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`
 - Squash merge to main
 - Compliance-as-code baseline preserved at `archive/compliance-v0`
+- **Commit messages: single line only**, conventional commit format (e.g. `feat: add taint propagation engine`)
+- **Never add `Co-Authored-By` lines** or multi-line commit bodies — keep it to one concise line
 
 ## Testing
 
