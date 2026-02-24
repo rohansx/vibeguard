@@ -432,7 +432,7 @@ func parseTypeScript(pf *ParsedFile, lines []string) {
 var (
 	goImportRe     = regexp.MustCompile(`"([^"]+)"`)
 	goChiSource    = regexp.MustCompile(`chi\.URLParam\s*\(|r\.PathValue\s*\(`)
-	goNetHTTPSrc   = regexp.MustCompile(`r\.(?:URL\.Query\(\)\.Get|FormValue|PostFormValue|Header\.Get|Cookie)\s*\(`)
+	goNetHTTPSrc   = regexp.MustCompile(`r\.(URL\.Query\(\)\.Get|FormValue|PostFormValue|Header\.Get|Cookie)\s*\(`)
 	goGinSource    = regexp.MustCompile(`c\.(?:Param|Query|PostForm|GetRawData|ShouldBind|Bind)\s*\(`)
 	goSQLSink      = regexp.MustCompile(`(?:db|tx|stmt|pool|conn|pgxpool)\.(?:Query|QueryRow|Exec|QueryContext|ExecContext|QueryRowContext|Begin|Send)\s*\(`)
 	goRCESink      = regexp.MustCompile(`exec\.Command\s*\(|os\.(?:StartProcess|Create)\s*\(`)
