@@ -15,6 +15,7 @@ build/
 *.dylib
 
 # Go
+apps/vgx/vgx
 apps/vgx/internal/embed/dist/
 *.test
 *.out
