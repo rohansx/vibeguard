@@ -1,6 +1,6 @@
 # VibeGuard — Architecture Decision Records
 
-**Created:** 2026-02-10
+**Created:** 2026-02-10 | **Updated:** 2026-03-02 (post-pivot to SPG)
 
 Each decision records the context, options considered, and rationale.
 
@@ -10,18 +10,9 @@ Each decision records the context, options considered, and rationale.
 
 **Date:** 2026-02-10 | **Status:** Accepted
 
-**Context:** VibeGuard is polyglot (Go + Python + TypeScript). We need a monorepo tool that can orchestrate builds, caching, and task dependencies across all three.
+**Context:** VibeGuard is polyglot (Go + TypeScript). We need a monorepo tool that can orchestrate builds, caching, and task dependencies.
 
-**Options considered:**
-| Option | Pros | Cons |
-|--------|------|------|
-| **Turborepo + pnpm** | Fast builds, great caching, pnpm workspaces for JS/TS, Go/Python via thin package.json wrappers | Requires wrapper pattern for non-JS apps |
-| Nx | More feature-rich, native Go/Python task support | Heavier, steeper learning curve, overkill for small team |
-| Just pnpm workspaces | Lightweight, no orchestrator overhead | Manual task coordination, no caching, no dependency graph |
-| Bazel | Hermetic builds, excellent polyglot support | Steep learning curve, massive overkill for early MVP |
-| Bun | Fastest installs, integrated runtime | Less mature Turborepo integration, Bun's bundler/runtime overlaps with Vite |
-
-**Decision:** Turborepo + pnpm. Battle-tested integration, stays out of the way in a polyglot monorepo. Go and Python apps get thin `package.json` wrappers where scripts delegate to native commands.
+**Decision:** Turborepo + pnpm. Dashboard builds first, dist is embedded into Go binary via `go:embed`. Turborepo handles the dependency graph (`VGX dependsOn dashboard#build`).
 
 ---
 
@@ -29,132 +20,122 @@ Each decision records the context, options considered, and rationale.
 
 **Date:** 2026-02-10 | **Status:** Accepted
 
-**Context:** The Go binary needs an HTTP router for the REST API.
+**Decision:** Chi v5. Lightweight, idiomatic, stdlib-compatible. Used for the team sync REST API (`:8080`). The core MCP path doesn't use HTTP at all (stdio).
 
-**Options considered:**
+---
+
+## ADR-003: Frontend — Embedded React SPA in Go Binary
+
+**Date:** 2026-02-10 | **Status:** Accepted
+
+**Decision:** Vite + React 19 + TypeScript builds the dashboard. Go's `embed` package bundles it into the single binary. No separate server, no CORS. Currently the dashboard is a scaffold — SPG-aware UI is Phase 2.
+
+---
+
+## ADR-004: Product Pivot — Compliance-as-Code → Security Property Graph
+
+**Date:** 2026-02-23 | **Status:** Accepted
+
+**Context:** The original VibeGuard was a compliance-as-code scanner (GDPR PDF → ast-grep rules → scan). We pivoted to a Security Property Graph that serves security context to AI coding agents via MCP.
+
+**Why:** AI agents generate 2.74x more security vulnerabilities than humans. Existing tools (Snyk, Semgrep, Talisman) scan AFTER code is written, produce 91% false positives, and developers bypass them. The SPG approach encodes security semantics into a live graph that agents query BEFORE writing code.
+
+**What changed:**
+- Deleted: Python ingestion service, PDF parsing, compliance scanner, regulatory rules
+- Added: SPG engine (parser, graph, taint, MCP server, file watcher)
+- Kept: Go binary, React dashboard, PostgreSQL (team sync only), Turborepo, Cobra CLI
+
+**Decision:** Full pivot. Old compliance code archived at `archive/compliance-v0` branch.
+
+---
+
+## ADR-005: Graph Persistence — bbolt (BoltDB)
+
+**Date:** 2026-02-23 | **Status:** Accepted
+
+**Context:** The SPG needs persistence across daemon restarts. Options: Neo4j, SQLite, bbolt, file-based JSON.
+
 | Option | Pros | Cons |
 |--------|------|------|
-| **Chi** | Lightweight, idiomatic, stdlib-compatible, excellent middleware ecosystem | Not as fast as fasthttp-based routers |
-| net/http (stdlib) | Zero dependencies, Go 1.22+ has path params | More verbose, less middleware ecosystem |
-| Fiber | Fastest benchmarks, Express-like API | Uses fasthttp (not stdlib compatible), less idiomatic Go |
-| Echo | Feature-rich, good middleware | Slightly heavier than Chi |
+| **bbolt** | Pure Go, embedded, zero config, fast for small graphs | No query language, manual indexing |
+| Neo4j | Full graph DB, Cypher queries | External process, Java dependency, overkill for local use |
+| SQLite | Embedded, SQL queries | Not optimized for graph traversal |
+| JSON files | Simplest | No concurrency, slow for large graphs |
 
-**Decision:** Chi. Idiomatic Go, stdlib-compatible (important for `go:embed` and standard middleware), and the spec's code examples already use it. Clerk SDK provides Chi-compatible middleware.
+**Decision:** bbolt. The SPG lives in-memory for fast traversal, with bbolt as a write-ahead persistence layer. No external process, no Java, no config. Graph stored at `~/.vibeguard/graph/<repo-hash>/spg.db`.
 
 ---
 
-## ADR-003: Frontend Architecture — Embedded React SPA in Go Binary
+## ADR-006: MCP Transport — stdio
 
-**Date:** 2026-02-10 | **Status:** Accepted
+**Date:** 2026-02-23 | **Status:** Accepted
 
-**Context:** The dashboard needs to be served alongside the API. Two approaches: separate Next.js app or embedded SPA.
+**Context:** MCP supports stdio, SSE, and HTTP transports.
 
-**Options considered:**
+**Decision:** stdio only. No network exposure, no ports, no auth needed. Code never leaves the machine. This is a deliberate security decision — VibeGuard's primary audience is developers who care about IP protection. Cursor and Claude Code both support stdio MCP servers natively.
+
+---
+
+## ADR-007: Parser Strategy — Regex First, Tree-sitter Later
+
+**Date:** 2026-02-23 | **Status:** Accepted
+
+**Context:** Need to extract security-relevant constructs (sources, sinks, sanitizers) from source files.
+
 | Option | Pros | Cons |
 |--------|------|------|
-| **Embedded React SPA** | Single binary deployment, no CORS, same origin for API+UI, simpler infra | No SSR, build dependency between dashboard and Go |
-| Next.js 15 standalone | SSR, API routes, more powerful | Two servers to deploy, CORS config needed, more complex |
-| Vite SPA (served separately) | Lightweight SPA with Vite | Still needs separate serving, CORS issues |
+| **Regex patterns** | Fast to build, pure Go, no CGo deps | Less accurate, can miss edge cases |
+| Tree-sitter | AST-level accuracy, language grammar support | CGo dependency, build complexity, slower iteration |
+| go/ast (Go only) | Native Go AST | Only works for Go files |
 
-**Decision:** Embedded React SPA. Vite builds the dashboard, Go's `embed` package bundles it into the binary. Single binary serves everything. During development, Vite's proxy sends `/api` calls to the Go service. This is simpler to deploy and eliminates CORS entirely.
+**Decision:** Regex for Phase 1, tree-sitter for Phase 2. The parser interface (`ParseFile → ParsedFile`) is stable — swapping regex for tree-sitter is a drop-in replacement. Regex is ~85% accurate on common framework patterns, which is sufficient for proving the SPG concept.
 
 ---
 
-## ADR-004: MVP Scope — GDPR Only
+## ADR-008: Taint Propagation — BFS, Not Datalog
 
-**Date:** 2026-02-10 | **Status:** Accepted
+**Date:** 2026-02-23 | **Status:** Accepted
 
-**Context:** The tech spec mentions GDPR, SOC 2, and EU AI Act as initial targets.
+**Context:** Need to find unsanitized source-to-sink data flow paths.
 
-**Options considered:**
 | Option | Pros | Cons |
 |--------|------|------|
-| **GDPR only** | Fastest to MVP, nail one framework completely | Narrower market appeal initially |
-| GDPR + SOC 2 | Broader appeal, covers EU + US | More rules to write, longer timeline |
-| GDPR + SOC 2 + EU AI Act | Full coverage from day one | Significantly more work, diluted quality |
+| **BFS traversal** | Simple, deterministic, easy to debug | Doesn't scale to millions of nodes |
+| Datalog (Souffle) | Declarative, handles complex flows | External process, learning curve, harder to debug |
+| Differential dataflow | Incremental, efficient at scale | Complex implementation, Rust dependency |
 
-**Decision:** GDPR only. Ship one framework done exceptionally well rather than three done partially. The ingestion pipeline makes adding new frameworks straightforward once the foundation is solid. SOC 2 is first expansion target.
+**Decision:** BFS with max depth 20. The SPG is typically 100-10,000 nodes — BFS is O(V+E) and completes in microseconds at this scale. Path deduplication and severity sorting are post-processing steps. Differential dataflow is a Phase 3 optimization if needed.
 
 ---
 
-## ADR-005: Database — PostgreSQL 17
+## ADR-009: Database — PostgreSQL for Team Sync Only
+
+**Date:** 2026-02-10 | **Status:** Updated
+
+**Context:** PostgreSQL was originally the primary store for compliance rules and scans. After the pivot, it's only used for team sync metadata.
+
+**Decision:** PostgreSQL 17 with pgx/v5. Stores: `repositories`, `spg_nodes`, `taint_paths`, `calibration_events`, `framework_classifiers`. The local SPG is always bbolt — PostgreSQL is optional (only needed for `vgx serve --api`).
+
+---
+
+## ADR-010: Authentication — Clerk (Team Sync Only)
+
+**Date:** 2026-02-10 | **Status:** Updated
+
+**Decision:** Clerk JWT auth for the team sync REST API. The core MCP path (stdio) has no auth — it's local-only. Clerk is only activated when running `vgx serve --api` for Pro/Team tier.
+
+---
+
+## ADR-011: Schema Migrations — dbmate
 
 **Date:** 2026-02-10 | **Status:** Accepted
 
-**Context:** Need a database for compliance rules, scan results, documents, audit logs.
-
-**Decision:** PostgreSQL 17. JSONB for flexible rule storage, pgcrypto for audit log integrity, row-level security for multi-tenancy. Both Go (pgx) and Python (asyncpg) have excellent PostgreSQL drivers. No need for a separate vector DB — pgvector can be added later for rule search.
+**Decision:** dbmate. Language-agnostic CLI, up/down migrations in `apps/vgx/db/migrations/`. Simple and stays out of the way.
 
 ---
 
-## ADR-006: Authentication — Clerk
+## ADR-012: Container Runtime — Podman
 
 **Date:** 2026-02-10 | **Status:** Accepted
 
-**Context:** Need auth with SSO support for enterprise customers.
-
-**Decision:** Clerk. Provides JWT-based auth, organization management, RBAC, and SSO (SAML/OIDC) out of the box. Go SDK (`clerk-sdk-go/v2`) provides middleware. React SDK (`@clerk/clerk-react`) handles the frontend. Avoids building auth from scratch.
-
----
-
-## ADR-007: Python Sidecar Architecture
-
-**Date:** 2026-02-10 | **Status:** Accepted
-
-**Context:** Marker, LangExtract, and PageIndex are Python libraries. The Go binary can't embed them directly.
-
-**Decision:** Separate Python FastAPI service running alongside Go. Internal-only (port 8001, Docker `expose` not `ports`). Go proxies document uploads to it. The Python service handles all document ingestion and is idle most of the time. This keeps the Go binary focused on real-time traffic.
-
----
-
-## ADR-008: Deployment Target — Hetzner CX33
-
-**Date:** 2026-02-10 | **Status:** Accepted
-
-**Context:** Need affordable hosting that can run all three services + PostgreSQL.
-
-**Decision:** Hetzner CX33 (4 vCPU, 8 GB RAM, ~EUR 7/month). Memory budget: PostgreSQL 2 GB, Go 200 MB, Python idle 300 MB, Python processing 2-3 GB. Fits with headroom. If tight, upgrade to CX42 (16 GB, EUR 16.40/month). Docker Compose for orchestration.
-
----
-
-## ADR-009: Schema Migrations — dbmate
-
-**Date:** 2026-02-10 | **Status:** Accepted (updated)
-
-**Context:** Both Go and Python services access the same PostgreSQL database. Need a migration tool that's language-agnostic and doesn't couple schema management to any single service.
-
-**Options considered:**
-| Option | Pros | Cons |
-|--------|------|------|
-| Custom Go migration runner | Self-contained, no external deps | Custom code to maintain, no rollback support, tied to Go binary |
-| **dbmate** | Language-agnostic, simple CLI, up/down migrations, schema dump, Docker-friendly | External dependency |
-| golang-migrate | Popular Go library | Still Go-specific, overkill for our use |
-| Flyway | Enterprise-grade, Java ecosystem | Heavy, Java dependency |
-
-**Decision:** dbmate. Runs from project root via `.dbmate.toml`, migrations in `apps/vgx/db/migrations/`. Language-agnostic means both Go and Python teams can create migrations. Supports rollbacks with `-- migrate:down` markers. The Python service reads/writes but never modifies schema.
-
----
-
-## ADR-010: Audit Log — Append-Only with DB Triggers
-
-**Date:** 2026-02-10 | **Status:** Accepted
-
-**Context:** Compliance products need tamper-proof audit trails.
-
-**Decision:** PostgreSQL triggers that raise exceptions on UPDATE or DELETE attempts on the `audit_log` table. Cryptographic chaining (each entry includes SHA-256 hash of previous entry) for tamper detection. This is enforced at the database level, not the application level — even application bugs can't corrupt the audit trail.
-
----
-
-## ADR-011: Container Runtime — Podman
-
-**Date:** 2026-02-10 | **Status:** Accepted
-
-**Context:** Need a container runtime for local development and production deployment.
-
-**Options considered:**
-| Option | Pros | Cons |
-|--------|------|------|
-| **Podman** | Daemonless, rootless by default, OCI-compliant, Docker CLI compatible | Slightly less ecosystem support for niche tools |
-| Docker | Industry standard, largest ecosystem | Requires daemon, Docker Desktop licensing for enterprises |
-
-**Decision:** Podman 5.x. Daemonless architecture (no root daemon required), `docker` aliased to `podman` for compatibility. Compose files use standard OCI format — work with both runtimes. All docs reference `podman compose` as the primary command.
+**Decision:** Podman 5.x. Daemonless, rootless, Docker CLI compatible. Used for local PostgreSQL and team sync API development.

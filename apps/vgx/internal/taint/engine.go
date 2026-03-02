@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/vibeguard/vgx/internal/graph"
 )
@@ -174,18 +175,30 @@ func (e *Engine) CalcBlastRadius(nodeID string) BlastRadius {
 
 // traceForward performs BFS from a source node, following DataFlow and Call edges.
 // Returns all taint paths (source → sink) without an intervening sanitizer.
+// For CallEdge traversal, it uses conservative propagation: if any argument name
+// matches a currently tainted variable, all callee parameters are treated as tainted.
 func (e *Engine) traceForward(src *graph.Node, visited map[string]bool) []graph.TaintPath {
 	if visited == nil {
 		visited = make(map[string]bool)
 	}
 
-	type state struct {
-		node       *graph.Node
-		path       []*graph.Node
-		sanitized  bool
+	// Seed tainted vars from the source node's metadata
+	var srcTaintedVars []string
+	if tv, ok := src.Metadata["tainted_vars"]; ok && tv != "" {
+		srcTaintedVars = strings.Split(tv, ",")
+	}
+	if len(srcTaintedVars) == 0 {
+		srcTaintedVars = []string{src.Symbol}
 	}
 
-	queue := []state{{node: src, path: []*graph.Node{src}}}
+	type state struct {
+		node        *graph.Node
+		path        []*graph.Node
+		sanitized   bool
+		taintedVars []string // variable names currently tainted at this point in the path
+	}
+
+	queue := []state{{node: src, path: []*graph.Node{src}, taintedVars: srcTaintedVars}}
 	var results []graph.TaintPath
 	const maxDepth = 20 // prevent runaway BFS on large graphs
 
@@ -216,17 +229,74 @@ func (e *Engine) traceForward(src *graph.Node, visited map[string]bool) []graph.
 			if next == nil {
 				continue
 			}
-			newSanitized := cur.sanitized || next.Type == graph.SanitizerNode
+
 			newPath := append(append([]*graph.Node{}, cur.path...), next)
+			newSanitized := cur.sanitized || next.Type == graph.SanitizerNode
+
+			if edge.Type == graph.CallEdge {
+				// Inter-procedural: only cross the call if a tainted variable is
+				// passed as an argument. Conservative: any tainted arg → all params tainted.
+				args := splitNonEmpty(edge.Metadata["args"])
+				if !anyTainted(cur.taintedVars, args) {
+					continue // no tainted args — don't cross this call boundary
+				}
+				// Propagate into callee: treat its declared params as tainted
+				calleeParams := splitNonEmpty(next.Metadata["params"])
+				if len(calleeParams) == 0 {
+					calleeParams = cur.taintedVars // fallback: keep current set
+				}
+				queue = append(queue, state{
+					node:        next,
+					path:        newPath,
+					sanitized:   newSanitized,
+					taintedVars: calleeParams,
+				})
+				continue
+			}
+
+			// DataFlowEdge or other edges: propagate tainted vars unchanged
 			queue = append(queue, state{
-				node:      next,
-				path:      newPath,
-				sanitized: newSanitized,
+				node:        next,
+				path:        newPath,
+				sanitized:   newSanitized,
+				taintedVars: cur.taintedVars,
 			})
 		}
 	}
 
 	return results
+}
+
+// anyTainted returns true if any element of args appears in the tainted vars set.
+func anyTainted(taintedVars, args []string) bool {
+	if len(taintedVars) == 0 || len(args) == 0 {
+		return false
+	}
+	taintSet := make(map[string]bool, len(taintedVars))
+	for _, v := range taintedVars {
+		taintSet[v] = true
+	}
+	for _, a := range args {
+		if taintSet[a] {
+			return true
+		}
+	}
+	return false
+}
+
+// splitNonEmpty splits a comma-separated string and drops empty entries.
+func splitNonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // findPath finds a path from src to a specific sink ID using BFS.
