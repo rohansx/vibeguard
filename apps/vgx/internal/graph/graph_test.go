@@ -245,6 +245,115 @@ func TestSeverityForVulnClass(t *testing.T) {
 	}
 }
 
+func TestFunctionNodeRegistration(t *testing.T) {
+	g := openTestGraph(t)
+
+	pf := &parser.ParsedFile{
+		Path:     "/repo/service.py",
+		Language: parser.Python,
+		Hash:     "abc",
+		Functions: []parser.FuncDef{
+			{Name: "handle_request", Line: 5, Params: []string{"user_id", "data"}},
+			{Name: "validate_input", Line: 20, Params: []string{"val"}},
+		},
+	}
+
+	if err := BuildFromFile(g, pf); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := g.FuncRegistry()
+	if _, ok := reg["handle_request"]; !ok {
+		t.Error("expected handle_request in funcRegistry")
+	}
+	if _, ok := reg["validate_input"]; !ok {
+		t.Error("expected validate_input in funcRegistry")
+	}
+
+	fnodes := g.NodesByType(FunctionNode)
+	if len(fnodes) != 2 {
+		t.Errorf("expected 2 FunctionNodes, got %d", len(fnodes))
+	}
+}
+
+func TestCrossFileCallEdge(t *testing.T) {
+	g := openTestGraph(t)
+
+	// Parse file A — defines callee function
+	pfA := &parser.ParsedFile{
+		Path:     "/repo/db.py",
+		Language: parser.Python,
+		Hash:     "aaa",
+		Functions: []parser.FuncDef{
+			{Name: "run_query", Line: 3, Params: []string{"q"}},
+		},
+	}
+	if err := BuildFromFile(g, pfA); err != nil {
+		t.Fatal(err)
+	}
+
+	// Parse file B — calls the function from file A
+	pfB := &parser.ParsedFile{
+		Path:     "/repo/app.py",
+		Language: parser.Python,
+		Hash:     "bbb",
+		Functions: []parser.FuncDef{
+			{Name: "handle", Line: 1, Params: []string{"request"}},
+		},
+		CallSites: []parser.CallSite{
+			{CallerFunc: "handle", Callee: "run_query", ArgNames: []string{"name"}, Line: 5},
+		},
+	}
+	if err := BuildFromFile(g, pfB); err != nil {
+		t.Fatal(err)
+	}
+
+	// handle FunctionNode should have a CallEdge → run_query FunctionNode
+	reg := g.FuncRegistry()
+	handleID, ok := reg["handle"]
+	if !ok {
+		t.Fatal("handle not in funcRegistry")
+	}
+	edges := g.OutEdges(handleID)
+	callEdges := 0
+	for _, e := range edges {
+		if e.Type == CallEdge {
+			callEdges++
+		}
+	}
+	if callEdges == 0 {
+		t.Error("expected at least one CallEdge from handle → run_query")
+	}
+}
+
+func TestFuncRegistryCleanupOnRemoveFile(t *testing.T) {
+	g := openTestGraph(t)
+
+	pf := &parser.ParsedFile{
+		Path:     "/repo/utils.py",
+		Language: parser.Python,
+		Hash:     "abc",
+		Functions: []parser.FuncDef{
+			{Name: "helper_func", Line: 10, Params: []string{"x"}},
+		},
+	}
+	if err := BuildFromFile(g, pf); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := g.FuncRegistry()["helper_func"]; !ok {
+		t.Fatal("helper_func should be registered before removal")
+	}
+
+	if err := g.RemoveFile("/repo/utils.py"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := g.FuncRegistry()["helper_func"]; ok {
+		t.Error("helper_func should be removed from funcRegistry after RemoveFile")
+	}
+}
+
 func openTestGraph(t *testing.T) *SPG {
 	t.Helper()
 	dir := t.TempDir()

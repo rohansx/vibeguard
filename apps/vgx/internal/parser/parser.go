@@ -55,6 +55,7 @@ type ParsedFile struct {
 	Nodes     []ParsedNode
 	Imports   []string // detected framework/library imports
 	Functions []FuncDef
+	CallSites []CallSite // call sites for inter-procedural call graph
 }
 
 // FuncDef tracks a function definition for inter-procedural analysis.
@@ -64,6 +65,14 @@ type FuncDef struct {
 	Params     []string // parameter names
 	IsHandler  bool     // is this an HTTP route handler?
 	Framework  string
+}
+
+// CallSite records a function call for building the inter-procedural call graph.
+type CallSite struct {
+	CallerFunc string   // enclosing function name ("" = top-level / unknown)
+	Callee     string   // called function name
+	ArgNames   []string // argument variable names used in the call
+	Line       int
 }
 
 // ParseFile parses a source file and extracts security-relevant nodes.
@@ -85,8 +94,15 @@ func ParseFile(path string) (*ParsedFile, error) {
 		Hash:     hash,
 	}
 
-	lines := splitLines(string(content))
+	// Tree-sitter path: more accurate AST-level analysis with call graph extraction
+	switch lang {
+	case Python, TypeScript, JavaScript, GoLang:
+		return parseTSFile(path, content, lang)
+	}
 
+	// Fallback: regex-based analysis for unknown languages
+	pf.Hash = hash
+	lines := splitLines(string(content))
 	switch lang {
 	case Python:
 		parsePython(pf, lines)
@@ -577,6 +593,10 @@ func parseGo(pf *ParsedFile, lines []string) {
 }
 
 // ---- Helpers ----
+
+func hashBytes(b []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(b))
+}
 
 func splitLines(content string) []string {
 	var lines []string

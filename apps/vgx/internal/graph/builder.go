@@ -1,6 +1,9 @@
 package graph
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/vibeguard/vgx/internal/parser"
 )
 
@@ -82,6 +85,57 @@ func BuildFromFile(g *SPG, pf *parser.ParsedFile) error {
 					}
 				}
 			}
+		}
+	}
+
+	// Create FunctionNodes and register them for cross-file call graph edges.
+	for _, fd := range pf.Functions {
+		id := MakeNodeID(g.repoRoot, pf.Path, fd.Line, fd.Name)
+		n := &Node{
+			ID:        id,
+			Type:      FunctionNode,
+			FilePath:  pf.Path,
+			LineStart: fd.Line,
+			Symbol:    fd.Name,
+			Framework: fd.Framework,
+			Metadata:  map[string]string{"params": strings.Join(fd.Params, ",")},
+		}
+		if err := g.AddNode(n); err != nil {
+			return err
+		}
+		// Register under the write lock held by AddNode — safe to update here
+		// because AddNode acquires its own lock internally. We need the lock again.
+		g.mu.Lock()
+		g.funcRegistry[fd.Name] = id
+		g.mu.Unlock()
+	}
+
+	// Create cross-file CallEdges: for each call site, link caller FunctionNode →
+	// callee FunctionNode if both are indexed in the graph.
+	for _, cs := range pf.CallSites {
+		if cs.Callee == "" {
+			continue
+		}
+		g.mu.RLock()
+		calleeID, calleeOK := g.funcRegistry[cs.Callee]
+		callerID, callerOK := g.funcRegistry[cs.CallerFunc]
+		g.mu.RUnlock()
+
+		if !calleeOK || !callerOK || callerID == calleeID {
+			continue // callee not yet indexed or same function
+		}
+		e := &Edge{
+			ID:   MakeEdgeID(callerID, calleeID, CallEdge),
+			From: callerID,
+			To:   calleeID,
+			Type: CallEdge,
+			Metadata: map[string]string{
+				"args":      strings.Join(cs.ArgNames, ","),
+				"call_line": strconv.Itoa(cs.Line),
+			},
+		}
+		if err := g.AddEdge(e); err != nil {
+			return err
 		}
 	}
 

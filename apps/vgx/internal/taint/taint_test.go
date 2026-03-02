@@ -187,6 +187,105 @@ func TestSeverityOrder(t *testing.T) {
 	}
 }
 
+func TestInterproceduralTaintPath(t *testing.T) {
+	g := buildTestGraph(t)
+
+	// src (SourceNode, tainted_vars=name) → DataFlow → caller FunctionNode
+	// caller → CallEdge (args=name) → callee FunctionNode (params=q)
+	// callee → DataFlow → sink (SinkNode, sqli)
+	g.AddNode(&graph.Node{
+		ID: "src", Type: graph.SourceNode, FilePath: "app.py", LineStart: 1,
+		Symbol: "name", Metadata: map[string]string{"tainted_vars": "name"},
+	})
+	g.AddNode(&graph.Node{
+		ID: "caller", Type: graph.FunctionNode, FilePath: "app.py", LineStart: 5,
+		Symbol: "handle", Metadata: map[string]string{"params": "name"},
+	})
+	g.AddNode(&graph.Node{
+		ID: "callee", Type: graph.FunctionNode, FilePath: "db.py", LineStart: 3,
+		Symbol: "run_query", Metadata: map[string]string{"params": "q"},
+	})
+	g.AddNode(&graph.Node{
+		ID: "sink", Type: graph.SinkNode, FilePath: "db.py", LineStart: 10,
+		Symbol: "execute", VulnClass: "sqli",
+	})
+
+	g.AddEdge(&graph.Edge{ID: "e1", From: "src", To: "caller", Type: graph.DataFlowEdge,
+		Metadata: map[string]string{"tainted_var": "name"}})
+	g.AddEdge(&graph.Edge{ID: "e2", From: "caller", To: "callee", Type: graph.CallEdge,
+		Metadata: map[string]string{"args": "name", "call_line": "7"}})
+	g.AddEdge(&graph.Edge{ID: "e3", From: "callee", To: "sink", Type: graph.DataFlowEdge})
+
+	eng := New(g)
+	paths := eng.FindAllPaths()
+
+	if len(paths) == 0 {
+		t.Fatal("expected at least 1 inter-procedural taint path")
+	}
+	if paths[0].Sink.ID != "sink" {
+		t.Errorf("expected sink node, got %q", paths[0].Sink.ID)
+	}
+	if paths[0].VulnClass != "sqli" {
+		t.Errorf("expected sqli, got %q", paths[0].VulnClass)
+	}
+}
+
+func TestCallEdgeNotCrossedWithoutTaintedArgs(t *testing.T) {
+	g := buildTestGraph(t)
+
+	// Source taints "user_input", but call passes "other_var" — taint must not cross
+	g.AddNode(&graph.Node{
+		ID: "src", Type: graph.SourceNode, FilePath: "app.py", LineStart: 1,
+		Symbol: "user_input", Metadata: map[string]string{"tainted_vars": "user_input"},
+	})
+	g.AddNode(&graph.Node{
+		ID: "caller", Type: graph.FunctionNode, FilePath: "app.py", LineStart: 5,
+		Symbol: "handle", Metadata: map[string]string{"params": "user_input"},
+	})
+	g.AddNode(&graph.Node{
+		ID: "callee", Type: graph.FunctionNode, FilePath: "db.py", LineStart: 3,
+		Symbol: "run_query", Metadata: map[string]string{"params": "q"},
+	})
+	g.AddNode(&graph.Node{
+		ID: "sink", Type: graph.SinkNode, FilePath: "db.py", LineStart: 10,
+		Symbol: "execute", VulnClass: "sqli",
+	})
+
+	g.AddEdge(&graph.Edge{ID: "e1", From: "src", To: "caller", Type: graph.DataFlowEdge})
+	g.AddEdge(&graph.Edge{ID: "e2", From: "caller", To: "callee", Type: graph.CallEdge,
+		Metadata: map[string]string{"args": "other_var"}}) // NOT "user_input"
+	g.AddEdge(&graph.Edge{ID: "e3", From: "callee", To: "sink", Type: graph.DataFlowEdge})
+
+	eng := New(g)
+	paths := eng.FindAllPaths()
+
+	for _, p := range paths {
+		if p.Sink.ID == "sink" {
+			t.Error("taint should not cross CallEdge when no tainted args match")
+		}
+	}
+}
+
+func TestAnyTainted(t *testing.T) {
+	tests := []struct {
+		tainted []string
+		args    []string
+		want    bool
+	}{
+		{[]string{"name", "id"}, []string{"name"}, true},
+		{[]string{"name"}, []string{"other"}, false},
+		{[]string{}, []string{"name"}, false},
+		{[]string{"x"}, []string{}, false},
+		{[]string{"a", "b"}, []string{"c", "b"}, true},
+	}
+	for _, tt := range tests {
+		got := anyTainted(tt.tainted, tt.args)
+		if got != tt.want {
+			t.Errorf("anyTainted(%v, %v) = %v, want %v", tt.tainted, tt.args, got, tt.want)
+		}
+	}
+}
+
 // ---- helpers ----
 
 func buildTestGraph(t *testing.T) *graph.SPG {

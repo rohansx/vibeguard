@@ -15,6 +15,7 @@ const (
 	SourceNode    NodeType = "SourceNode"    // untrusted attacker-controlled entry
 	SinkNode      NodeType = "SinkNode"      // dangerous operation
 	SanitizerNode NodeType = "SanitizerNode" // validation / escaping
+	FunctionNode  NodeType = "FunctionNode"  // function definition (inter-procedural call graph)
 	TrustBoundary NodeType = "TrustBoundaryEdge"
 	AuthCritical  NodeType = "AuthCriticalNode"
 	GenericNode   NodeType = "GenericNode"

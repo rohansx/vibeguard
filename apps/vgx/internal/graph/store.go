@@ -20,13 +20,14 @@ var (
 
 // SPG is the in-memory Security Property Graph with bbolt persistence.
 type SPG struct {
-	mu       sync.RWMutex
-	nodes    map[string]*Node         // nodeID → Node
-	outEdges map[string][]*Edge       // nodeID → outgoing edges
-	inEdges  map[string][]*Edge       // nodeID → incoming edges (backward traversal)
-	db       *bolt.DB
-	repoRoot string
-	version  string // content hash — changes when graph is modified
+	mu           sync.RWMutex
+	nodes        map[string]*Node   // nodeID → Node
+	outEdges     map[string][]*Edge // nodeID → outgoing edges
+	inEdges      map[string][]*Edge // nodeID → incoming edges (backward traversal)
+	funcRegistry map[string]string  // funcName → nodeID (for cross-file call graph edges)
+	db           *bolt.DB
+	repoRoot     string
+	version      string // content hash — changes when graph is modified
 }
 
 // Open opens or creates the persistent graph store at storePath.
@@ -55,11 +56,12 @@ func Open(storePath, repoRoot string) (*SPG, error) {
 	}
 
 	g := &SPG{
-		nodes:    make(map[string]*Node),
-		outEdges: make(map[string][]*Edge),
-		inEdges:  make(map[string][]*Edge),
-		db:       db,
-		repoRoot: repoRoot,
+		nodes:        make(map[string]*Node),
+		outEdges:     make(map[string][]*Edge),
+		inEdges:      make(map[string][]*Edge),
+		funcRegistry: make(map[string]string),
+		db:           db,
+		repoRoot:     repoRoot,
 	}
 
 	// Load existing data from disk into memory
@@ -111,6 +113,13 @@ func (g *SPG) RemoveFile(filePath string) error {
 		}
 	}
 	for _, id := range toRemove {
+		n := g.nodes[id]
+		// Clean up funcRegistry for FunctionNodes being removed
+		if n != nil && n.Type == FunctionNode && n.Symbol != "" {
+			if g.funcRegistry[n.Symbol] == id {
+				delete(g.funcRegistry, n.Symbol)
+			}
+		}
 		delete(g.nodes, id)
 		// Remove associated edges
 		for _, e := range g.outEdges[id] {
@@ -261,6 +270,10 @@ func (g *SPG) loadFromDisk() error {
 			var n Node
 			if err := json.Unmarshal(v, &n); err == nil {
 				g.nodes[n.ID] = &n
+				// Rebuild funcRegistry from persisted FunctionNodes
+				if n.Type == FunctionNode && n.Symbol != "" {
+					g.funcRegistry[n.Symbol] = n.ID
+				}
 			}
 			return nil
 		})
@@ -275,6 +288,18 @@ func (g *SPG) loadFromDisk() error {
 		})
 		return nil
 	})
+}
+
+// FuncRegistry returns a snapshot of the function name → node ID registry.
+// Used by tests and diagnostics.
+func (g *SPG) FuncRegistry() map[string]string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make(map[string]string, len(g.funcRegistry))
+	for k, v := range g.funcRegistry {
+		out[k] = v
+	}
+	return out
 }
 
 func (g *SPG) invalidateVersion() {
